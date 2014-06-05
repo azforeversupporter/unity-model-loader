@@ -38,6 +38,13 @@ namespace UnityModelLoader.ModelLoader.Loaders
 			// Begin loading object with recursion
 			ProcessNextChunk(currentChunk);
 		
+			// Normalize before returning
+			foreach (var obj in gameObjects)
+			{
+				var mesh = GetMeshFromObject(obj);
+				mesh.RecalculateNormals();
+			}
+		
 			return gameObjects;
 		}
 		
@@ -112,6 +119,15 @@ namespace UnityModelLoader.ModelLoader.Loaders
 						ProcessNextChunk (currentChunk);
 						break;
 						
+					case ChunkType.Material:
+						materialCount++;
+						
+						var material = new Material(Shader.Find("Diffuse"));
+						materials.Add (material);
+						
+						ProcessNextMaterialChunk(currentChunk);
+						break;
+						
 					case ChunkType.Object:
 						objectCount++;
 						gameObjects.Add (InitObject ());
@@ -170,6 +186,10 @@ namespace UnityModelLoader.ModelLoader.Loaders
 						AddFacesToObject(obj, currentChunk);
 						break;
 					
+					case ChunkType.ObjectMaterial:
+						AddMaterialToObject(obj, currentChunk);
+						break;
+					
 					case ChunkType.ObjectUv:
 						AddUvCoordinatesToObject(obj, currentChunk);
 						break;
@@ -185,6 +205,51 @@ namespace UnityModelLoader.ModelLoader.Loaders
 			}
 			
 			// Make the current chunk the previous chunk, because that's the way things started
+			currentChunk = prevChunk;
+		}
+		
+		private void ProcessNextMaterialChunk(Chunk prevChunk)
+		{
+			currentChunk = new Chunk();
+			var materialName = string.Empty;
+			var materialFileName = string.Empty;
+			char ch;
+			
+			while (prevChunk.Processed < prevChunk.Length)
+			{
+				// Read the next chunk
+				ReadChunk (currentChunk);
+				
+				switch (currentChunk.Type) 
+				{
+					case ChunkType.MaterialName:
+						do
+						{
+							ch = reader.ReadChar ();
+							materialName += ch;
+						} while (ch != '\0');
+						
+						var material = GetCurrentlyProcessedMaterial();
+						material.name = materialName;
+						
+						currentChunk.Processed += Encoding.ASCII.GetByteCount (materialName);
+						break;
+						
+					// TODO: Material Map support
+					case ChunkType.MaterialDiffuse:
+						AddDiffuseColorToMaterial(GetCurrentlyProcessedMaterial(), currentChunk);
+						break;
+						
+					default:
+						var seek = currentChunk.Length - currentChunk.Processed;
+						reader.BaseStream.Seek (seek, SeekOrigin.Current);
+						currentChunk.Processed += seek;
+						break;
+				}
+				
+				prevChunk.Processed += currentChunk.Processed;
+			}
+			
 			currentChunk = prevChunk;
 		}
 		
@@ -263,6 +328,58 @@ namespace UnityModelLoader.ModelLoader.Loaders
 			prevChunk.Processed += (8 * textureVertexCount);
 		}
 		
+		private void AddDiffuseColorToMaterial(Material material, Chunk chunk)
+		{
+			// Read the color chunk
+			ReadChunk(tmpChunk);
+			
+			var rgb = reader.ReadBytes (3);
+			tmpChunk.Processed += 3;
+			
+			// Normalize colors, because Unity uses floats between 0 and 1 
+			// while 3D Studio Max uses bytes between 0 and 255
+			var r = NormalizeColor (rgb[0]);
+			var g = NormalizeColor (rgb[1]);
+			var b = NormalizeColor (rgb[2]);
+			
+			material.color = new Color(r, g, b);
+			
+			chunk.Processed += tmpChunk.Processed;
+		}
+		
+		private void AddMaterialToObject(GameObject obj, Chunk prevChunk)
+		{
+			char ch;
+			var materialName = string.Empty;
+			
+			do 
+			{
+				ch = reader.ReadChar ();
+				materialName += ch;
+			} while (ch != '\0');
+			
+			prevChunk.Processed += Encoding.ASCII.GetByteCount (materialName);
+			
+			materialName = materialName.Replace ('\0', ' ').Trim ();
+			
+			var material = materials.FirstOrDefault (m => m.name == materialName);
+			if (material != null)
+			{
+				var renderer = GetRendererFromObject (obj);
+				renderer.material = material;
+			}
+			
+			// Seek to skip shared materials
+			var seek = prevChunk.Length - prevChunk.Processed;
+			reader.BaseStream.Seek (seek, SeekOrigin.Current);
+			prevChunk.Processed += seek;
+		}
+		
+		private float NormalizeColor(int color) 
+		{
+			return (float)color / 255;
+		}
+		
 		private GameObject InitObject() 
 		{
 			var obj = new GameObject();
@@ -277,13 +394,25 @@ namespace UnityModelLoader.ModelLoader.Loaders
 			return obj.GetComponent<MeshFilter>().mesh;
 		}
 		
+		private Renderer GetRendererFromObject(GameObject obj)
+		{
+			return obj.GetComponent<MeshRenderer>().renderer;
+		}
+		
+		private Material GetCurrentlyProcessedMaterial()
+		{
+			return materials.Last ();
+		}
+		
 		private GameObject currentObject { get { return gameObjects.Last(); } }
 		
 		private Chunk currentChunk;
 		private Chunk tmpChunk;
 		private int objectCount = 0;
+		private int materialCount = 0;
 		private int fileVersion;
 		private List<GameObject> gameObjects = new List<GameObject>();
+		private List<Material> materials = new List<Material>();
 		
 		private FileStream stream;
 		private BinaryReader reader;

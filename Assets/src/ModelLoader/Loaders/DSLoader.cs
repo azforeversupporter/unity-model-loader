@@ -127,10 +127,11 @@ namespace UnityModelLoader.ModelLoader.Loaders
 						currentObject.name = name;
 						currentChunk.Processed += Encoding.ASCII.GetByteCount (name);
 						
-						//ProcessNextObjectChunk(currentObject, currentChunk);
+						ProcessNextObjectChunk(currentObject, currentChunk);
 						break;
 						
 					default:
+						// Seek to the next chunk
 						var seek = currentChunk.Length - currentChunk.Processed;
 						reader.BaseStream.Seek (seek, SeekOrigin.Current);
 						currentChunk.Processed += seek;
@@ -145,6 +146,123 @@ namespace UnityModelLoader.ModelLoader.Loaders
 			currentChunk = prevChunk;
 		}
 		
+		private void ProcessNextObjectChunk(GameObject obj, Chunk prevChunk)
+		{
+			currentChunk = new Chunk();
+			
+			while (prevChunk.Processed < prevChunk.Length) 
+			{
+				// Read the next chunk
+				ReadChunk (currentChunk);
+				
+				switch (currentChunk.Type)
+				{
+					// Start of a new object
+					case ChunkType.ObjectMesh:
+						ProcessNextObjectChunk (obj, currentChunk);
+						break;
+					
+					case ChunkType.ObjectVertices:
+						AddVerticesToObject(obj, currentChunk);
+						break;
+					
+					case ChunkType.ObjectFaces:
+						AddFacesToObject(obj, currentChunk);
+						break;
+					
+					case ChunkType.ObjectUv:
+						AddUvCoordinatesToObject(obj, currentChunk);
+						break;
+					
+					default:
+						var seek = currentChunk.Length - currentChunk.Processed;
+						reader.BaseStream.Seek (seek, SeekOrigin.Current);
+						currentChunk.Processed += seek;
+						break; 
+				}
+				
+				prevChunk.Processed += currentChunk.Processed;
+			}
+			
+			// Make the current chunk the previous chunk, because that's the way things started
+			currentChunk = prevChunk;
+		}
+		
+		private void AddVerticesToObject(GameObject obj, Chunk prevChunk)
+		{
+			var vertexCount = reader.ReadUInt16 ();
+			prevChunk.Processed += 2;
+			
+			var vertices = new List<Vector3>();
+			for (int i = 0; i < vertexCount; i++) 
+			{
+				var x = reader.ReadSingle ();
+				var y = reader.ReadSingle ();
+				var z = reader.ReadSingle ();
+				
+				// Swap Y and Z, because 3D Studio Max uses Z as the up axis
+				vertices.Add (new Vector3(x, z, y));				
+			}
+			
+			// Add vertices to the object
+			var mesh = GetMeshFromObject (obj);
+			mesh.vertices = vertices.ToArray ();
+			
+			// Add amount of processed bytes. Because ReadSingle reads 4 bytes, 
+			// 12 bytes * vertexCount has been read.
+			prevChunk.Processed += (12 * vertexCount);
+		}
+		
+		private void AddFacesToObject(GameObject obj, Chunk prevChunk)
+		{
+			var faceCount = reader.ReadUInt16 ();
+			prevChunk.Processed += 2;
+			
+			var faces = new List<int>();
+			for (int i = 0; i < faceCount; i++)
+			{
+				for (int j = 0; j < 4; j++)
+				{
+					// Only use the first 3 shorts, the 4th is not of use
+					var index = reader.ReadInt16 ();
+					
+					if (j < 3)
+					{
+						faces.Add (index);
+					}
+				}	
+			}
+			
+			var mesh = GetMeshFromObject (obj);
+			mesh.triangles = faces.ToArray ();
+			
+			// Add amount of processed bytes. Because ReadInt16 reads 2 bytes, 
+			// 8 bytes * faceCount has been read.
+			prevChunk.Processed += (8 * faceCount);
+		}
+		
+		private void AddUvCoordinatesToObject(GameObject obj, Chunk prevChunk)
+		{
+			var textureVertexCount = reader.ReadInt16();
+			prevChunk.Processed += 2;
+			
+			var vertices = new List<Vector2>();
+			for (int i = 0; i < textureVertexCount; i++)
+			{
+				var u = reader.ReadSingle ();
+				var v = reader.ReadSingle ();
+				
+				vertices.Add (new Vector2(u, v));
+			}
+			
+			var mesh = GetMeshFromObject (obj);
+			mesh.uv = vertices.ToArray();
+			
+			// Add amount of processed bytes. Because ReadSingle reads 4 bytes, 
+			// 8 bytes * textureVertexCount has been read.
+			prevChunk.Processed += (8 * textureVertexCount);
+		}
+		
 		private GameObject InitObject() 
 		{
 			var obj = new GameObject();
@@ -152,6 +270,11 @@ namespace UnityModelLoader.ModelLoader.Loaders
 			obj.AddComponent<MeshRenderer>();
 			
 			return obj;
+		}
+		
+		private Mesh GetMeshFromObject(GameObject obj)
+		{
+			return obj.GetComponent<MeshFilter>().mesh;
 		}
 		
 		private GameObject currentObject { get { return gameObjects.Last(); } }
